@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Extractor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PDF Extractor</h1>
+      <p class="subtitle">Lade eine PDF hoch — Text, Bilder und Tabellen werden automatisch getrennt.</p>
+    </header>
+
+    <main>
+      <div class="upload-zone" id="uploadZone">
+        <div class="upload-icon">📄</div>
+        <p class="upload-text">PDF hier ablegen oder klicken zum Auswählen</p>
+        <input type="file" id="fileInput" accept=".pdf" hidden>
+      </div>
+
+      <div class="progress" id="progress" hidden>
+        <div class="spinner"></div>
+        <p id="progressText">PDF wird analysiert…</p>
+      </div>
+
+      <div class="error-box" id="error" hidden></div>
+    </main>
+  </div>
+
+  <script>
+    const zone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+    const progress = document.getElementById('progress');
+    const progressText = document.getElementById('progressText');
+    const errorBox = document.getElementById('error');
+
+    zone.addEventListener('click', () => fileInput.click());
+
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      zone.classList.add('drag-over');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) upload(file);
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) upload(fileInput.files[0]);
+    });
+
+    async function upload(file) {
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        showError('Bitte nur PDF-Dateien hochladen.');
+        return;
+      }
+
+      zone.hidden = true;
+      errorBox.hidden = true;
+      progress.hidden = false;
+      progressText.textContent = `"${file.name}" wird analysiert…`;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.detail || 'Unbekannter Fehler');
+        }
+
+        const params = new URLSearchParams({
+          session: data.session_id,
+          filename: data.filename,
+          pages: data.stats.pages,
+          images: data.stats.images,
+          tables: data.stats.tables,
+        });
+
+        window.location.href = `/results.html?${params}`;
+      } catch (err) {
+        progress.hidden = true;
+        zone.hidden = false;
+        showError(err.message);
+      }
+    }
+
+    function showError(msg) {
+      errorBox.textContent = `Fehler: ${msg}`;
+      errorBox.hidden = false;
+    }
+  </script>
+</body>
+</html>

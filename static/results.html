@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Extractor — Ergebnis</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="result-header">
+      <div>
+        <a href="/" class="back-link">← Neue PDF hochladen</a>
+        <h2 id="filename" style="margin-top:.25rem"></h2>
+      </div>
+      <div id="stats" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="text">Text</button>
+      <button class="tab-btn" data-tab="images">Bilder</button>
+      <button class="tab-btn" data-tab="tables">Tabellen</button>
+    </div>
+
+    <div id="text" class="tab-panel active">
+      <div class="text-content" id="textContent">
+        <div class="spinner" style="margin:2rem auto"></div>
+      </div>
+    </div>
+
+    <div id="images" class="tab-panel">
+      <div id="imagesContent">
+        <div class="spinner" style="margin:2rem auto"></div>
+      </div>
+    </div>
+
+    <div id="tables" class="tab-panel">
+      <div id="tablesContent">
+        <div class="spinner" style="margin:2rem auto"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const sessionId = params.get('session');
+    const filename = params.get('filename') || 'Dokument';
+
+    if (!sessionId) {
+      location.href = '/';
+    }
+
+    document.getElementById('filename').textContent = filename;
+
+    const statsEl = document.getElementById('stats');
+    [
+      ['pages', 'Seiten'],
+      ['images', 'Bilder'],
+      ['tables', 'Tabellen'],
+    ].forEach(([key, label]) => {
+      const val = params.get(key) || '?';
+      statsEl.innerHTML += `<span class="badge">${val} ${label}</span>`;
+    });
+
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    // Load text
+    fetch(`/api/sessions/${sessionId}/text`)
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById('textContent');
+        if (!data.pages || data.pages.length === 0) {
+          el.innerHTML = '<div class="empty">Kein extrahierbarer Text gefunden.</div>';
+          return;
+        }
+
+        el.innerHTML = data.pages.map(page => {
+          const blocksHtml = page.blocks.map(block => {
+            const text = escapeHtml(block.text);
+            if (block.type === 'heading')
+              return `<div class="block-heading">${text}</div>`;
+            if (block.type === 'subheading')
+              return `<div class="block-subheading">${text}</div>`;
+            return `<div class="block-paragraph">${text}</div>`;
+          }).join('');
+
+          return `<div class="page-label">Seite ${page.page}</div>${blocksHtml}`;
+        }).join('');
+      })
+      .catch(() => {
+        document.getElementById('textContent').innerHTML =
+          '<div class="empty">Fehler beim Laden des Texts.</div>';
+      });
+
+    // Load images
+    fetch(`/api/sessions/${sessionId}/images`)
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById('imagesContent');
+        if (!data.images || data.images.length === 0) {
+          el.innerHTML = '<div class="empty">Keine eingebetteten Bilder gefunden.</div>';
+          return;
+        }
+
+        el.innerHTML = `<div class="images-grid">${
+          data.images.map(img => `
+            <div class="image-card">
+              <a href="${img.url}" target="_blank">
+                <img src="${img.url}" alt="Seite ${img.page}" loading="lazy">
+              </a>
+              <div class="image-card-meta">
+                Seite ${img.page}
+                ${img.width ? `· ${img.width}×${img.height}px` : ''}
+              </div>
+            </div>
+          `).join('')
+        }</div>`;
+      })
+      .catch(() => {
+        document.getElementById('imagesContent').innerHTML =
+          '<div class="empty">Fehler beim Laden der Bilder.</div>';
+      });
+
+    // Load tables
+    fetch(`/api/sessions/${sessionId}/tables`)
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById('tablesContent');
+        if (!data.tables || data.tables.length === 0) {
+          el.innerHTML = '<div class="empty">Keine Tabellen gefunden.</div>';
+          return;
+        }
+
+        el.innerHTML = data.tables.map(t => `
+          <div class="table-card">
+            <div class="table-card-header">
+              Tabelle ${t.index} · Seite ${t.page} · ${t.rows} Zeilen × ${t.cols} Spalten
+            </div>
+            <div class="table-card-body">${t.html}</div>
+          </div>
+        `).join('');
+      })
+      .catch(() => {
+        document.getElementById('tablesContent').innerHTML =
+          '<div class="empty">Fehler beim Laden der Tabellen.</div>';
+      });
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+  </script>
+</body>
+</html>
