@@ -68,6 +68,14 @@ async def get_tables(session_id: str):
     return _load_results(session_id)["tables"]
 
 
+@app.get("/api/sessions/{session_id}/pdf")
+async def serve_pdf(session_id: str):
+    pdf_path = SESSIONS_DIR / session_id / "document.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF nicht gefunden.")
+    return FileResponse(pdf_path, media_type="application/pdf")
+
+
 @app.get("/api/images/{session_id}/{filename}")
 async def serve_image(session_id: str, filename: str):
     img_path = SESSIONS_DIR / session_id / "images" / filename

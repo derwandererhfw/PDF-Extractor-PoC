@@ -20,6 +20,7 @@
       <button class="tab-btn active" data-tab="text">Text</button>
       <button class="tab-btn" data-tab="images">Bilder</button>
       <button class="tab-btn" data-tab="tables">Tabellen</button>
+      <button class="tab-btn" data-tab="original">Original PDF</button>
     </div>
 
     <div id="text" class="tab-panel active">
@@ -38,6 +39,10 @@
       <div id="tablesContent">
         <div class="spinner" style="margin:2rem auto"></div>
       </div>
+    </div>
+
+    <div id="original" class="tab-panel">
+      <div id="originalContent"></div>
     </div>
   </div>
 
@@ -152,6 +157,20 @@
         document.getElementById('tablesContent').innerHTML =
           '<div class="empty">Fehler beim Laden der Tabellen.</div>';
       });
+
+    // Original PDF — load iframe only when tab is first opened
+    let pdfLoaded = false;
+    document.querySelector('[data-tab="original"]').addEventListener('click', () => {
+      if (pdfLoaded) return;
+      pdfLoaded = true;
+      const el = document.getElementById('originalContent');
+      el.innerHTML = `
+        <iframe
+          src="/api/sessions/${sessionId}/pdf"
+          style="width:100%;height:82vh;border:1px solid var(--border);border-radius:var(--radius);background:#525659;"
+          title="Original PDF">
+        </iframe>`;
+    });
 
     function escapeHtml(str) {
       return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
