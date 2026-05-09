@@ -7,43 +7,57 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="container">
-    <div class="result-header">
-      <div>
-        <a href="/" class="back-link">← Neue PDF hochladen</a>
-        <h2 id="filename" style="margin-top:.25rem"></h2>
+  <div class="results-layout">
+
+    <!-- ── Linke Seite: Tabs + Inhalte ── -->
+    <div class="results-main">
+
+      <div class="results-header">
+        <div style="min-width:0">
+          <a href="/" class="back-link">← Neue PDF hochladen</a>
+          <h2 id="filename" style="margin-top:.2rem"></h2>
+        </div>
+        <div id="stats" style="display:flex;gap:.4rem;flex-wrap:wrap"></div>
       </div>
-      <div id="stats" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
-    </div>
 
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="text">Text</button>
-      <button class="tab-btn" data-tab="images">Bilder</button>
-      <button class="tab-btn" data-tab="tables">Tabellen</button>
-      <button class="tab-btn" data-tab="original">Original PDF</button>
-    </div>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="text">Text</button>
+        <button class="tab-btn" data-tab="images">Bilder</button>
+        <button class="tab-btn" data-tab="tables">Tabellen</button>
+      </div>
 
-    <div id="text" class="tab-panel active">
-      <div class="text-content" id="textContent">
-        <div class="spinner" style="margin:2rem auto"></div>
+      <div class="results-body">
+
+        <div id="text" class="tab-panel active">
+          <div class="text-content" id="textContent">
+            <div class="spinner" style="margin:2rem auto"></div>
+          </div>
+        </div>
+
+        <div id="images" class="tab-panel">
+          <div id="imagesContent">
+            <div class="spinner" style="margin:2rem auto"></div>
+          </div>
+        </div>
+
+        <div id="tables" class="tab-panel">
+          <div id="tablesContent">
+            <div class="spinner" style="margin:2rem auto"></div>
+          </div>
+        </div>
+
       </div>
     </div>
 
-    <div id="images" class="tab-panel">
-      <div id="imagesContent">
-        <div class="spinner" style="margin:2rem auto"></div>
+    <!-- ── Rechte Seite: Original PDF ── -->
+    <div class="pdf-sidebar">
+      <div class="pdf-sidebar-header">
+        <span>Original PDF</span>
+        <span id="pdfFilename" style="opacity:.6;font-weight:400"></span>
       </div>
+      <iframe id="pdfFrame" title="Original PDF"></iframe>
     </div>
 
-    <div id="tables" class="tab-panel">
-      <div id="tablesContent">
-        <div class="spinner" style="margin:2rem auto"></div>
-      </div>
-    </div>
-
-    <div id="original" class="tab-panel">
-      <div id="originalContent"></div>
-    </div>
   </div>
 
   <script>
@@ -51,20 +65,15 @@
     const sessionId = params.get('session');
     const filename = params.get('filename') || 'Dokument';
 
-    if (!sessionId) {
-      location.href = '/';
-    }
+    if (!sessionId) location.href = '/';
 
     document.getElementById('filename').textContent = filename;
+    document.getElementById('pdfFilename').textContent = filename;
+    document.getElementById('pdfFrame').src = `/api/sessions/${sessionId}/pdf`;
 
     const statsEl = document.getElementById('stats');
-    [
-      ['pages', 'Seiten'],
-      ['images', 'Bilder'],
-      ['tables', 'Tabellen'],
-    ].forEach(([key, label]) => {
-      const val = params.get(key) || '?';
-      statsEl.innerHTML += `<span class="badge">${val} ${label}</span>`;
+    [['pages','Seiten'],['images','Bilder'],['tables','Tabellen']].forEach(([key, label]) => {
+      statsEl.innerHTML += `<span class="badge">${params.get(key) ?? '?'} ${label}</span>`;
     });
 
     // Tab switching
@@ -82,23 +91,19 @@
       .then(r => r.json())
       .then(data => {
         const el = document.getElementById('textContent');
-        if (!data.pages || data.pages.length === 0) {
+        if (!data.pages?.length) {
           el.innerHTML = '<div class="empty">Kein extrahierbarer Text gefunden.</div>';
           return;
         }
-
-        el.innerHTML = data.pages.map(page => {
-          const blocksHtml = page.blocks.map(block => {
+        el.innerHTML = data.pages.map(page =>
+          `<div class="page-label">Seite ${page.page}</div>` +
+          page.blocks.map(block => {
             const text = escapeHtml(block.text);
-            if (block.type === 'heading')
-              return `<div class="block-heading">${text}</div>`;
-            if (block.type === 'subheading')
-              return `<div class="block-subheading">${text}</div>`;
+            if (block.type === 'heading')    return `<div class="block-heading">${text}</div>`;
+            if (block.type === 'subheading') return `<div class="block-subheading">${text}</div>`;
             return `<div class="block-paragraph">${text}</div>`;
-          }).join('');
-
-          return `<div class="page-label">Seite ${page.page}</div>${blocksHtml}`;
-        }).join('');
+          }).join('')
+        ).join('');
       })
       .catch(() => {
         document.getElementById('textContent').innerHTML =
@@ -110,24 +115,17 @@
       .then(r => r.json())
       .then(data => {
         const el = document.getElementById('imagesContent');
-        if (!data.images || data.images.length === 0) {
+        if (!data.images?.length) {
           el.innerHTML = '<div class="empty">Keine eingebetteten Bilder gefunden.</div>';
           return;
         }
-
-        el.innerHTML = `<div class="images-grid">${
-          data.images.map(img => `
-            <div class="image-card">
-              <a href="${img.url}" target="_blank">
-                <img src="${img.url}" alt="Seite ${img.page}" loading="lazy">
-              </a>
-              <div class="image-card-meta">
-                Seite ${img.page}
-                ${img.width ? `· ${img.width}×${img.height}px` : ''}
-              </div>
-            </div>
-          `).join('')
-        }</div>`;
+        el.innerHTML = `<div class="images-grid">${data.images.map(img => `
+          <div class="image-card">
+            <a href="${img.url}" target="_blank">
+              <img src="${img.url}" alt="Seite ${img.page}" loading="lazy">
+            </a>
+            <div class="image-card-meta">Seite ${img.page}${img.width ? ` · ${img.width}×${img.height}px` : ''}</div>
+          </div>`).join('')}</div>`;
       })
       .catch(() => {
         document.getElementById('imagesContent').innerHTML =
@@ -139,38 +137,20 @@
       .then(r => r.json())
       .then(data => {
         const el = document.getElementById('tablesContent');
-        if (!data.tables || data.tables.length === 0) {
+        if (!data.tables?.length) {
           el.innerHTML = '<div class="empty">Keine Tabellen gefunden.</div>';
           return;
         }
-
         el.innerHTML = data.tables.map(t => `
           <div class="table-card">
-            <div class="table-card-header">
-              Tabelle ${t.index} · Seite ${t.page} · ${t.rows} Zeilen × ${t.cols} Spalten
-            </div>
+            <div class="table-card-header">Tabelle ${t.index} · Seite ${t.page} · ${t.rows} Zeilen × ${t.cols} Spalten</div>
             <div class="table-card-body">${t.html}</div>
-          </div>
-        `).join('');
+          </div>`).join('');
       })
       .catch(() => {
         document.getElementById('tablesContent').innerHTML =
           '<div class="empty">Fehler beim Laden der Tabellen.</div>';
       });
-
-    // Original PDF — load iframe only when tab is first opened
-    let pdfLoaded = false;
-    document.querySelector('[data-tab="original"]').addEventListener('click', () => {
-      if (pdfLoaded) return;
-      pdfLoaded = true;
-      const el = document.getElementById('originalContent');
-      el.innerHTML = `
-        <iframe
-          src="/api/sessions/${sessionId}/pdf"
-          style="width:100%;height:82vh;border:1px solid var(--border);border-radius:var(--radius);background:#525659;"
-          title="Original PDF">
-        </iframe>`;
-    });
 
     function escapeHtml(str) {
       return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
