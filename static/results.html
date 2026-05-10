@@ -32,23 +32,23 @@
     </div>
   </div>
 
-  <!-- ══════════ CENTER: Composition ══════════ -->
+  <!-- ══════════ CENTER: Composition Canvas ══════════ -->
   <div class="panel-composition">
     <div class="comp-toolbar">
       <span class="panel-title">Komposition</span>
-      <button class="btn-merge" id="mergeBtn" hidden onclick="mergeSelected()">
-        Zusammenführen
-      </button>
-      <button class="btn-download" id="downloadBtn" onclick="downloadComposition()">
-        📄 PDF herunterladen
-      </button>
+      <button class="btn-merge" id="mergeBtn" hidden onclick="mergeSelected()">Zusammenführen</button>
+      <button class="btn-download" id="downloadBtn" onclick="downloadComposition()">📄 PDF herunterladen</button>
     </div>
 
-    <div class="panel-body" style="padding:0">
-      <div class="comp-empty" id="compEmpty">
-        Noch keine Elemente.<br>Klicke <strong>Einfügen</strong> bei einem Element links.
+    <div class="comp-canvas" id="compCanvas">
+      <div class="comp-canvas-inner" id="compInner">
+        <div class="comp-empty-overlay" id="compEmpty">
+          <div class="comp-empty-box">
+            Noch keine Elemente.<br>
+            Klicke <strong>Einfügen</strong> bei einem Element links.
+          </div>
+        </div>
       </div>
-      <div id="compList"></div>
     </div>
   </div>
 
@@ -56,7 +56,7 @@
   <div class="panel-pdf" id="pdfPanel">
     <div class="pdf-toggle-bar">
       <button class="pdf-toggle-btn" id="pdfToggle" onclick="togglePdf()" title="PDF ein-/ausklappen">◀</button>
-      <span class="pdf-toggle-label" id="pdfLabel">Original PDF</span>
+      <span class="pdf-toggle-label">Original PDF</span>
     </div>
     <iframe id="pdfFrame" title="Original PDF"></iframe>
   </div>
@@ -65,19 +65,25 @@
 
 <script>
 // ═══════════════════════════════════════════════
-// State
+// URL params & session
 // ═══════════════════════════════════════════════
 const params    = new URLSearchParams(location.search);
 const sessionId = params.get('session');
 if (!sessionId) location.href = '/';
 
+// ═══════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════
 const state = {
   extracted: { text: [], images: [], tables: [] },
   deletedIds: new Set(),
-  composition: [],
+  composition: [],   // each: { ...el, compId, x, y }
   compCounter: 0,
-  dragSrcIdx: null,
 };
+
+// Drag state (canvas cards)
+let dragState = null;
+// { compId, startMouseX, startMouseY, startCardX, startCardY }
 
 // ═══════════════════════════════════════════════
 // Init
@@ -99,6 +105,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
   });
 });
+
+// Global mouse events for canvas drag
+document.addEventListener('mousemove', onGlobalMouseMove);
+document.addEventListener('mouseup',   onGlobalMouseUp);
 
 // ═══════════════════════════════════════════════
 // Load extracted data
@@ -141,7 +151,8 @@ fetch(`/api/sessions/${sessionId}/tables`).then(r => r.json()).then(data => {
 // ═══════════════════════════════════════════════
 function renderExtracted(tab) {
   const container = document.getElementById(`tab-${tab}`);
-  const items = state.extracted[tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables'];
+  const key  = tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables';
+  const items = state.extracted[key];
 
   if (!items.length) {
     container.innerHTML = '<div class="empty">Keine Elemente gefunden.</div>';
@@ -150,40 +161,48 @@ function renderExtracted(tab) {
 
   container.innerHTML = items.map(el => {
     const deleted = state.deletedIds.has(el.id) ? 'deleted' : '';
+    const longText = el.type === 'text' && (el.text || '').length > 120;
     return `<div class="ext-card ${deleted}" data-id="${el.id}">
       <div class="ext-card-top">
-        <span class="ext-type-badge">${badgeLabel(el)}</span>
+        <span class="ext-type-badge">${extBadgeLabel(el)}</span>
         <span class="ext-page-label">Seite ${el.page}</span>
         <button class="btn-insert" onclick="insertEl('${el.id}','${tab}')">+ Einfügen</button>
         <button class="btn-delete" onclick="deleteExtracted('${el.id}','${tab}')">✕</button>
       </div>
-      <div class="ext-card-body ${el.type === 'text' && el.text.length > 120 ? 'has-fade' : ''}">
-        ${previewHtml(el)}
+      <div class="ext-card-body ${longText ? 'has-fade' : ''}">
+        ${extPreviewHtml(el)}
       </div>
     </div>`;
   }).join('');
 }
 
-function badgeLabel(el) {
-  if (el.type === 'text') return el.block_type === 'heading' ? 'H1' : el.block_type === 'subheading' ? 'H2' : 'Text';
-  if (el.type === 'image') return 'Bild';
-  return 'Tabelle';
+function extBadgeLabel(el) {
+  if (el.type === 'text') {
+    return el.block_type === 'heading' ? 'H1' : el.block_type === 'subheading' ? 'H2' : 'Text';
+  }
+  return el.type === 'image' ? 'Bild' : 'Tabelle';
 }
 
-function previewHtml(el) {
-  if (el.type === 'text') return escHtml(el.text);
+function extPreviewHtml(el) {
   if (el.type === 'image') return `<img src="${el.url}" alt="">`;
-  return `<span style="color:var(--muted)">Tabelle ${el.index} · ${el.rows} Zeilen × ${el.cols} Sp.</span>`;
+  if (el.type === 'table') return `<span style="color:var(--muted)">Tabelle ${el.index} · ${el.rows} Zeilen × ${el.cols} Sp.</span>`;
+  return escHtml(el.text);
 }
 
 // ═══════════════════════════════════════════════
 // Extracted actions
 // ═══════════════════════════════════════════════
 function insertEl(id, tab) {
-  const items = state.extracted[tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables'];
-  const el = items.find(e => e.id === id);
+  const key   = tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables';
+  const el    = state.extracted[key].find(e => e.id === id);
   if (!el) return;
-  state.composition.push({ ...el, compId: `c${state.compCounter++}` });
+
+  // Cascade new cards diagonally so they don't stack perfectly
+  const offset = state.composition.length * 24;
+  const x = 40 + (offset % 480);
+  const y = 40 + Math.floor(offset / 480) * 160 + (offset % 480 === 0 ? 0 : 0);
+
+  state.composition.push({ ...el, compId: `c${state.compCounter++}`, x, y });
   renderComposition();
 }
 
@@ -194,111 +213,161 @@ function deleteExtracted(id, tab) {
 }
 
 // ═══════════════════════════════════════════════
-// Render composition
+// Canvas composition rendering
 // ═══════════════════════════════════════════════
 function renderComposition() {
-  const list  = document.getElementById('compList');
+  const inner = document.getElementById('compInner');
   const empty = document.getElementById('compEmpty');
-  const merge = document.getElementById('mergeBtn');
 
-  empty.hidden = state.composition.length > 0;
+  // Remove all existing comp-cards (but keep the empty overlay)
+  inner.querySelectorAll('.comp-card').forEach(c => c.remove());
 
-  list.innerHTML = state.composition.map((el, idx) => {
-    const isText = el.type === 'text';
-    return `<div class="comp-item" draggable="true"
-                data-idx="${idx}"
-                ondragstart="onDragStart(event,${idx})"
-                ondragover="onDragOver(event,${idx})"
-                ondrop="onDrop(event,${idx})"
-                ondragleave="onDragLeave(event)"
-                ondragend="onDragEnd()">
-      <span class="drag-handle" title="Ziehen zum Sortieren">⠿</span>
-      <div class="comp-item-inner">
-        <div class="comp-item-head">
-          <span class="comp-type-badge">${badgeLabel(el)}</span>
-          ${isText ? `<input type="checkbox" class="comp-merge-check" data-compid="${el.compId}" onchange="updateMergeBtn()">` : ''}
-        </div>
-        <div class="comp-preview ${isText && el.text.length > 100 ? 'has-fade' : ''}">
-          ${compPreviewHtml(el)}
-        </div>
-      </div>
-      <button class="btn-comp-remove" onclick="removeFromComp('${el.compId}')" title="Entfernen">✕</button>
-    </div>`;
-  }).join('');
+  empty.style.display = state.composition.length === 0 ? 'flex' : 'none';
+
+  state.composition.forEach(el => {
+    const card = buildCard(el);
+    inner.appendChild(card);
+  });
 
   updateMergeBtn();
 }
 
-function compPreviewHtml(el) {
-  if (el.type === 'image') return `<img src="${el.url}" alt="">`;
-  if (el.type === 'table') return `<span style="color:var(--muted)">Tabelle ${el.index} · Seite ${el.page}</span>`;
-  const cls = el.block_type === 'heading' ? 'comp-heading' : el.block_type === 'subheading' ? 'comp-subheading' : '';
-  return `<span class="${cls}">${escHtml(el.text)}</span>`;
+function buildCard(el) {
+  const card = document.createElement('div');
+  card.className = 'comp-card';
+  card.dataset.compid = el.compId;
+  card.dataset.type   = el.type;
+  if (el.type === 'text') card.dataset.btype = el.block_type || 'paragraph';
+  card.style.left = el.x + 'px';
+  card.style.top  = el.y + 'px';
+
+  // Badge class
+  let badgeClass = 'b-para';
+  let badgeText  = 'Text';
+  if (el.type === 'text') {
+    if (el.block_type === 'heading')    { badgeClass = 'b-h1';  badgeText = 'H1'; }
+    else if (el.block_type === 'subheading') { badgeClass = 'b-h2'; badgeText = 'H2'; }
+    else { badgeClass = 'b-para'; badgeText = 'Text'; }
+  } else if (el.type === 'image') { badgeClass = 'b-img'; badgeText = 'Bild'; }
+  else if (el.type === 'table')  { badgeClass = 'b-tbl'; badgeText = 'Tabelle'; }
+
+  const mergeCheckbox = el.type === 'text'
+    ? `<input type="checkbox" class="comp-merge-check" data-compid="${el.compId}" onchange="updateMergeBtn()">`
+    : '';
+
+  const bodyContent = cardBodyHtml(el);
+  const longContent = el.type === 'text' && (el.text || '').length > 90;
+
+  card.innerHTML = `
+    <div class="comp-card-header">
+      <span class="comp-badge ${badgeClass}">${badgeText}</span>
+      ${mergeCheckbox}
+      <span style="font-size:.68rem;color:var(--muted);flex:1;text-align:right">S.${el.page}</span>
+      <button class="btn-comp-remove" onclick="removeFromComp('${el.compId}')" title="Entfernen">✕</button>
+    </div>
+    <div class="comp-card-body ${longContent ? 'faded' : ''}">
+      ${bodyContent}
+    </div>`;
+
+  // Drag: attach mousedown to the card header (not the buttons inside)
+  card.querySelector('.comp-card-header').addEventListener('mousedown', e => {
+    if (e.target.closest('button') || e.target.closest('input')) return;
+    e.preventDefault();
+    startCardDrag(e, el.compId);
+  });
+
+  return card;
 }
 
+function cardBodyHtml(el) {
+  if (el.type === 'image') return `<img src="${el.url}" alt="">`;
+  if (el.type === 'table') return `<span style="color:var(--muted)">Tabelle ${el.index} · Seite ${el.page}</span>`;
+  return escHtml(el.text);
+}
+
+// ═══════════════════════════════════════════════
+// Canvas card dragging
+// ═══════════════════════════════════════════════
+function startCardDrag(e, compId) {
+  const el = state.composition.find(c => c.compId === compId);
+  if (!el) return;
+
+  dragState = {
+    compId,
+    startMouseX: e.clientX,
+    startMouseY: e.clientY,
+    startCardX:  el.x,
+    startCardY:  el.y,
+  };
+
+  const cardEl = document.querySelector(`.comp-card[data-compid="${compId}"]`);
+  if (cardEl) cardEl.classList.add('is-dragging');
+}
+
+function onGlobalMouseMove(e) {
+  if (!dragState) return;
+
+  const dx = e.clientX - dragState.startMouseX;
+  const dy = e.clientY - dragState.startMouseY;
+
+  const el = state.composition.find(c => c.compId === dragState.compId);
+  if (!el) return;
+
+  el.x = Math.max(0, dragState.startCardX + dx);
+  el.y = Math.max(0, dragState.startCardY + dy);
+
+  const cardEl = document.querySelector(`.comp-card[data-compid="${dragState.compId}"]`);
+  if (cardEl) {
+    cardEl.style.left = el.x + 'px';
+    cardEl.style.top  = el.y + 'px';
+  }
+}
+
+function onGlobalMouseUp() {
+  if (!dragState) return;
+  const cardEl = document.querySelector(`.comp-card[data-compid="${dragState.compId}"]`);
+  if (cardEl) cardEl.classList.remove('is-dragging');
+  dragState = null;
+}
+
+// ═══════════════════════════════════════════════
+// Remove from composition
+// ═══════════════════════════════════════════════
 function removeFromComp(compId) {
   state.composition = state.composition.filter(e => e.compId !== compId);
   renderComposition();
 }
 
+// ═══════════════════════════════════════════════
+// Merge
+// ═══════════════════════════════════════════════
 function updateMergeBtn() {
   const checked = document.querySelectorAll('.comp-merge-check:checked');
   document.getElementById('mergeBtn').hidden = checked.length < 2;
 }
 
-// ═══════════════════════════════════════════════
-// Merge
-// ═══════════════════════════════════════════════
 function mergeSelected() {
-  const checked = [...document.querySelectorAll('.comp-merge-check:checked')];
-  const ids = new Set(checked.map(cb => cb.dataset.compid));
+  const checked  = [...document.querySelectorAll('.comp-merge-check:checked')];
+  const ids      = new Set(checked.map(cb => cb.dataset.compid));
   const selected = state.composition.filter(e => ids.has(e.compId));
   if (selected.length < 2) return;
 
-  const firstIdx = state.composition.findIndex(e => e.compId === selected[0].compId);
+  // Use position of topmost selected card
+  const topEl = selected.reduce((a, b) => a.y < b.y ? a : b);
+
   const merged = {
-    compId: `c${state.compCounter++}`,
-    type: 'text',
+    compId:     `c${state.compCounter++}`,
+    type:       'text',
     block_type: 'paragraph',
-    page: selected[0].page,
-    text: selected.map(e => e.text).join(' '),
+    page:       topEl.page,
+    text:       selected.map(e => e.text).join(' '),
+    x:          topEl.x,
+    y:          topEl.y,
   };
 
-  // Replace first selected with merged, remove rest
   state.composition = state.composition.filter(e => !ids.has(e.compId));
-  state.composition.splice(firstIdx, 0, merged);
+  state.composition.push(merged);
   renderComposition();
-}
-
-// ═══════════════════════════════════════════════
-// Drag & Drop
-// ═══════════════════════════════════════════════
-function onDragStart(e, idx) {
-  state.dragSrcIdx = idx;
-  e.currentTarget.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-}
-function onDragOver(e, idx) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  document.querySelectorAll('.comp-item').forEach(el => el.classList.remove('drag-over'));
-  if (idx !== state.dragSrcIdx) e.currentTarget.classList.add('drag-over');
-}
-function onDragLeave(e) {
-  e.currentTarget.classList.remove('drag-over');
-}
-function onDrop(e, toIdx) {
-  e.preventDefault();
-  if (state.dragSrcIdx === null || state.dragSrcIdx === toIdx) return;
-  const item = state.composition.splice(state.dragSrcIdx, 1)[0];
-  state.composition.splice(toIdx, 0, item);
-  renderComposition();
-}
-function onDragEnd() {
-  state.dragSrcIdx = null;
-  document.querySelectorAll('.comp-item').forEach(el => {
-    el.classList.remove('dragging', 'drag-over');
-  });
 }
 
 // ═══════════════════════════════════════════════
@@ -313,11 +382,14 @@ async function downloadComposition() {
   btn.disabled = true;
   btn.textContent = '⏳ Wird erstellt…';
 
+  // Sort by vertical position (top → bottom), then horizontal (left → right)
+  const sorted = [...state.composition].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+
   try {
     const res = await fetch(`/api/sessions/${sessionId}/compose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ elements: state.composition }),
+      body: JSON.stringify({ elements: sorted }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
