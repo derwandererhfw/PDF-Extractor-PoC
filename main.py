@@ -76,6 +76,30 @@ async def serve_pdf(session_id: str):
     return FileResponse(pdf_path, media_type="application/pdf")
 
 
+@app.get("/api/sessions/{session_id}/mobile-pdf")
+async def serve_mobile_pdf(session_id: str):
+    session_dir = SESSIONS_DIR / session_id
+    original_path = session_dir / "document.pdf"
+    mobile_path = session_dir / "mobile.pdf"
+
+    if not original_path.exists():
+        raise HTTPException(status_code=404, detail="Session nicht gefunden.")
+
+    if not mobile_path.exists():
+        try:
+            extractor = PDFExtractor(str(original_path), str(session_dir))
+            extractor.generate_mobile_pdf(str(mobile_path))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Konvertierung fehlgeschlagen: {e}")
+
+    return FileResponse(
+        mobile_path,
+        media_type="application/pdf",
+        filename="mobile.pdf",
+        headers={"Content-Disposition": "attachment; filename=mobile.pdf"},
+    )
+
+
 @app.get("/api/images/{session_id}/{filename}")
 async def serve_image(session_id: str, filename: str):
     img_path = SESSIONS_DIR / session_id / "images" / filename

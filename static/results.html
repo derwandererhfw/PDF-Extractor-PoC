@@ -24,6 +24,10 @@
         <button class="tab-btn active" data-tab="text">Text</button>
         <button class="tab-btn" data-tab="images">Bilder</button>
         <button class="tab-btn" data-tab="tables">Tabellen</button>
+        <div style="flex:1"></div>
+        <a id="mobileDownload" class="mobile-dl-btn" title="Für Handy optimierte PDF herunterladen">
+          📱 Mobile PDF
+        </a>
       </div>
 
       <div class="results-body">
@@ -70,6 +74,18 @@
     document.getElementById('filename').textContent = filename;
     document.getElementById('pdfFilename').textContent = filename;
     document.getElementById('pdfFrame').src = `/api/sessions/${sessionId}/pdf`;
+
+    // Mobile PDF download
+    const dlBtn = document.getElementById('mobileDownload');
+    dlBtn.href = `/api/sessions/${sessionId}/mobile-pdf`;
+    dlBtn.addEventListener('click', () => {
+      dlBtn.textContent = '⏳ Wird erstellt…';
+      dlBtn.style.pointerEvents = 'none';
+      setTimeout(() => {
+        dlBtn.textContent = '📱 Mobile PDF';
+        dlBtn.style.pointerEvents = '';
+      }, 8000);
+    });
 
     const statsEl = document.getElementById('stats');
     [['pages','Seiten'],['images','Bilder'],['tables','Tabellen']].forEach(([key, label]) => {

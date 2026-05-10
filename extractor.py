@@ -157,6 +157,38 @@ class PDFExtractor:
         html += "</table>"
         return html
 
+    def generate_mobile_pdf(self, output_path: str, target_width_pt: float = 360.0) -> str:
+        """
+        Re-scale every page so it fits exactly target_width_pt wide.
+        Height is kept proportional → no horizontal scrolling, layout intact.
+        Fully vector-based via show_pdf_page() → no quality loss.
+        """
+        src = fitz.open(self.pdf_path)
+        dst = fitz.open()
+
+        for page_num in range(len(src)):
+            src_page = src[page_num]
+            src_rect = src_page.rect
+
+            if src_rect.width == 0:
+                continue
+
+            scale = target_width_pt / src_rect.width
+            new_w = target_width_pt
+            new_h = round(src_rect.height * scale, 2)
+
+            dst_page = dst.new_page(width=new_w, height=new_h)
+            dst_page.show_pdf_page(
+                fitz.Rect(0, 0, new_w, new_h),
+                src,
+                page_num,
+            )
+
+        dst.save(output_path, garbage=4, deflate=True)
+        dst.close()
+        src.close()
+        return output_path
+
     def extract_all(self) -> dict:
         return {
             "text": self.extract_text(),

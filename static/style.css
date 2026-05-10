@@ -358,5 +358,25 @@ header .subtitle {
   border-radius: var(--radius);
 }
 
+/* ── Mobile download button ──────────────── */
+.mobile-dl-btn {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .4rem .9rem;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  font-size: .8rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  align-self: center;
+  margin: .25rem 0;
+  transition: opacity .15s;
+}
+
+.mobile-dl-btn:hover { opacity: .85; }
+
 /* ── Utility ─────────────────────────────── */
 [hidden] { display: none !important; }
