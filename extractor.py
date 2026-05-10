@@ -157,64 +157,136 @@ class PDFExtractor:
         html += "</table>"
         return html
 
-    def generate_composed_pdf(self, elements: list, output_path: str) -> str:
+    def generate_composed_pdf(self, elements: list, page_count: int, output_path: str) -> str:
         """
-        Build a new PDF from a list of composition elements.
-        Each element: {type: 'text'|'image'|'table', ...}
-        """
-        import base64
-        import html as html_lib
+        Build a PDF from layout-positioned elements.
 
-        css = """
-            body { font-family: Arial, Helvetica, sans-serif; font-size: 11pt;
-                   line-height: 1.55; color: #1a1a1a; margin: 0; padding: 0; }
-            h1   { font-size: 18pt; font-weight: bold; margin: 0 0 8pt; }
-            h2   { font-size: 13pt; font-weight: bold; margin: 0 0 6pt; }
-            p    { margin: 0 0 8pt; }
-            img  { max-width: 100%; height: auto; display: block; margin: 6pt 0; }
-            table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 10pt; }
-            th   { background: #e8eaf6; font-weight: bold;
-                   padding: 5pt 7pt; border: 0.5pt solid #999; }
-            td   { padding: 4pt 7pt; border: 0.5pt solid #999; }
-            tr:nth-child(even) td { background: #f5f5f5; }
+        Each element carries:
+          pageIndex : int   — 0-based page index
+          xPct, yPct       — position as fraction of A4 (0.0–1.0)
+          wPct, hPct       — size   as fraction of A4 (0.0–1.0)
+          type             — 'text' | 'image' | 'table'
         """
-        parts = [f"<html><head><style>{css}</style></head><body>"]
+        A4_W = 595.28   # points
+        A4_H = 841.89   # points
+
+        doc = fitz.open()
+        pages = [doc.new_page(width=A4_W, height=A4_H) for _ in range(page_count)]
 
         for el in elements:
-            t = el.get("type")
-            if t == "text":
-                tag = {"heading": "h1", "subheading": "h2"}.get(el.get("block_type"), "p")
-                text = html_lib.escape(el.get("text", ""))
-                parts.append(f"<{tag}>{text}</{tag}>")
-            elif t == "image":
+            pi = int(el.get("pageIndex", 0))
+            if pi < 0 or pi >= len(pages):
+                continue
+
+            page = pages[pi]
+            x0 = float(el.get("xPct", 0.0)) * A4_W
+            y0 = float(el.get("yPct", 0.0)) * A4_H
+            w  = float(el.get("wPct", 0.85)) * A4_W
+            h  = float(el.get("hPct", 0.10)) * A4_H
+            rect = fitz.Rect(x0, y0, x0 + w, y0 + h)
+
+            el_type = el.get("type", "")
+
+            if el_type == "text":
+                block_type = el.get("block_type", "paragraph")
+                if block_type == "heading":
+                    fontsize, fontname = 18, "hebo"
+                elif block_type == "subheading":
+                    fontsize, fontname = 13, "hebo"
+                else:
+                    fontsize, fontname = 11, "helv"
+
+                page.insert_textbox(
+                    rect, el.get("text", ""),
+                    fontsize=fontsize, fontname=fontname,
+                    color=(0.07, 0.07, 0.07),
+                    align=0,
+                )
+
+            elif el_type == "image":
                 img_path = self.images_dir / el.get("filename", "")
                 if img_path.exists():
-                    ext = img_path.suffix[1:].lower()
-                    mime = "jpeg" if ext in ("jpg", "jpeg") else ext
-                    data = base64.b64encode(img_path.read_bytes()).decode()
-                    parts.append(f'<img src="data:image/{mime};base64,{data}"/>')
-            elif t == "table":
-                parts.append(el.get("html", ""))
+                    try:
+                        page.insert_image(rect, filename=str(img_path), keep_proportion=True)
+                    except Exception:
+                        pass
 
-        parts.append("</body></html>")
-        full_html = "\n".join(parts)
+            elif el_type == "table":
+                self._draw_table_on_page(page, rect, el)
 
-        story = fitz.Story(html=full_html)
-        writer = fitz.DocumentWriter(str(output_path))
-        pagerect = fitz.paper_rect("a4")
-        margin = 50
-        where = fitz.Rect(
-            pagerect.x0 + margin, pagerect.y0 + margin,
-            pagerect.x1 - margin, pagerect.y1 - margin,
-        )
-        more = True
-        while more:
-            device = writer.begin_page(pagerect)
-            more, _ = story.place(where)
-            story.draw(device)
-            writer.end_page()
-        writer.close()
+        doc.save(str(output_path), garbage=4, deflate=True)
+        doc.close()
         return output_path
+
+    def _draw_table_on_page(self, page, rect: "fitz.Rect", el: dict) -> None:
+        """Render an HTML table as a grid of cells on a PDF page."""
+        from html.parser import HTMLParser
+
+        class _TableParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.rows: list = []
+                self._row = None
+                self._cell = None
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "tr":
+                    self._row = []
+                elif tag in ("td", "th") and self._row is not None:
+                    self._cell = []
+
+            def handle_endtag(self, tag):
+                if tag == "tr" and self._row is not None:
+                    self.rows.append(self._row)
+                    self._row = None
+                elif tag in ("td", "th") and self._cell is not None and self._row is not None:
+                    self._row.append("".join(self._cell).strip())
+                    self._cell = None
+
+            def handle_data(self, data):
+                if self._cell is not None:
+                    self._cell.append(data)
+
+        parser = _TableParser()
+        parser.feed(el.get("html", ""))
+        rows = parser.rows
+        if not rows:
+            return
+
+        ncols   = max((len(r) for r in rows), default=1)
+        nrows   = len(rows)
+        col_w   = rect.width / ncols
+        row_h   = min(rect.height / nrows, 18.0)
+
+        H_BG   = (0.91, 0.92, 0.96)   # header row background
+        ALT_BG = (0.97, 0.97, 0.97)   # alternating row background
+        BORDER = (0.60, 0.60, 0.60)
+        TEXT   = (0.07, 0.07, 0.07)
+
+        for ri, row in enumerate(rows):
+            y_top = rect.y0 + ri * row_h
+            y_bot = y_top + row_h
+            if y_top >= rect.y1:
+                break
+            y_bot = min(y_bot, rect.y1)
+
+            for ci in range(ncols):
+                x_l = rect.x0 + ci * col_w
+                x_r = min(x_l + col_w, rect.x1)
+                cell_rect = fitz.Rect(x_l, y_top, x_r, y_bot)
+
+                fill = H_BG if ri == 0 else (ALT_BG if ri % 2 == 0 else None)
+                if fill:
+                    page.draw_rect(cell_rect, color=None, fill=fill)
+                page.draw_rect(cell_rect, color=BORDER, width=0.4)
+
+                cell_text = row[ci] if ci < len(row) else ""
+                fn        = "hebo" if ri == 0 else "helv"
+                text_rect = fitz.Rect(x_l + 2.5, y_top + 1.5, x_r - 1.5, y_bot - 1.0)
+                page.insert_textbox(
+                    text_rect, cell_text,
+                    fontsize=8, fontname=fn, color=TEXT, align=0,
+                )
 
     def generate_mobile_pdf(self, output_path: str, target_width_pt: float = 360.0) -> str:
         """

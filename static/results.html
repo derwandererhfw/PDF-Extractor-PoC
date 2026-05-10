@@ -32,30 +32,28 @@
     </div>
   </div>
 
-  <!-- ══════════ CENTER: Composition Canvas ══════════ -->
+  <!-- ══════════ CENTER: A4 Composition Canvas ══════════ -->
   <div class="panel-composition">
     <div class="comp-toolbar">
       <span class="panel-title">Komposition</span>
+      <label class="toolbar-label" style="margin-left:.3rem">Seite:</label>
+      <select id="activePageSelect" class="page-select" onchange="setActivePage(+this.value)">
+        <option value="0">1</option>
+      </select>
+      <button class="btn-add-page" onclick="addPage()" title="Neue Seite hinzufügen">+ Seite</button>
+      <div class="toolbar-sep"></div>
       <button class="btn-merge" id="mergeBtn" hidden onclick="mergeSelected()">Zusammenführen</button>
       <button class="btn-download" id="downloadBtn" onclick="downloadComposition()">📄 PDF herunterladen</button>
     </div>
 
-    <div class="comp-canvas" id="compCanvas">
-      <!-- Empty overlay is a direct child of comp-canvas so inset:0 fills the visible viewport, not the 2400x1600 inner div -->
-      <div class="comp-empty-overlay" id="compEmpty">
-        <div class="comp-empty-box">
-          Noch keine Elemente.<br>
-          Klicke <strong>Einfügen</strong> bei einem Element links.
-        </div>
-      </div>
-      <div class="comp-canvas-inner" id="compInner"></div>
-    </div>
+    <!-- Gray background — pages are injected here by JS -->
+    <div class="comp-canvas" id="compCanvas"></div>
   </div>
 
-  <!-- ══════════ RIGHT: PDF sidebar (collapsible) ══════════ -->
+  <!-- ══════════ RIGHT: PDF sidebar ══════════ -->
   <div class="panel-pdf" id="pdfPanel">
     <div class="pdf-toggle-bar">
-      <button class="pdf-toggle-btn" id="pdfToggle" onclick="togglePdf()" title="PDF ein-/ausklappen">◀</button>
+      <button class="pdf-toggle-btn" onclick="togglePdf()" title="PDF ein-/ausklappen">◀</button>
       <span class="pdf-toggle-label">Original PDF</span>
     </div>
     <iframe id="pdfFrame" title="Original PDF"></iframe>
@@ -65,11 +63,15 @@
 
 <script>
 // ═══════════════════════════════════════════════
-// URL params & session
+// Constants — A4 in "design pixels" at 96 dpi
 // ═══════════════════════════════════════════════
-const params    = new URLSearchParams(location.search);
-const sessionId = params.get('session');
-if (!sessionId) location.href = '/';
+const A4_W = 794;   // px
+const A4_H = 1123;  // px
+
+// Aspect ratio fraction for converting percentage coords → A4 points (for PDF)
+// A4_PT_W / A4_W = 595.28 / 794 ≈ 0.7497
+const A4_PT_W = 595.28;
+const A4_PT_H = 841.89;
 
 // ═══════════════════════════════════════════════
 // State
@@ -77,13 +79,28 @@ if (!sessionId) location.href = '/';
 const state = {
   extracted: { text: [], images: [], tables: [] },
   deletedIds: new Set(),
-  composition: [],   // each: { ...el, compId, x, y }
+  // Each element: { ...el, compId, pageIndex, xPct, yPct, wPct, hPct }
+  composition: [],
   compCounter: 0,
+  pageCount: 1,
+  activePage: 0,
+  pageNextY: [0.04],   // next insertion y (fraction) per page
 };
 
-// Drag state (canvas cards)
-let dragState = null;
-// { compId, startMouseX, startMouseY, startCardX, startCardY }
+// Live display dimensions (recomputed on resize)
+let pageDisplayW = 0;
+let pageDisplayH = 0;
+
+// Interaction state
+let dragState   = null;   // { compId, startMouseX, startMouseY, startCardX, startCardY }
+let resizeState = null;   // { compId, startMouseX, startMouseY, startW, startH, cardX, cardY }
+
+// ═══════════════════════════════════════════════
+// URL params & session
+// ═══════════════════════════════════════════════
+const params    = new URLSearchParams(location.search);
+const sessionId = params.get('session');
+if (!sessionId) location.href = '/';
 
 // ═══════════════════════════════════════════════
 // Init
@@ -106,9 +123,17 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-// Global mouse events for canvas drag
-document.addEventListener('mousemove', onGlobalMouseMove);
-document.addEventListener('mouseup',   onGlobalMouseUp);
+// Global mouse events
+document.addEventListener('mousemove', onMouseMove);
+document.addEventListener('mouseup',   onMouseUp);
+
+// Recompute scale when canvas resizes (PDF panel collapse/expand, window resize)
+let renderTimer = null;
+const ro = new ResizeObserver(() => {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(() => { computeScale(); renderCanvas(); }, 60);
+});
+ro.observe(document.getElementById('compCanvas'));
 
 // ═══════════════════════════════════════════════
 // Load extracted data
@@ -147,11 +172,11 @@ fetch(`/api/sessions/${sessionId}/tables`).then(r => r.json()).then(data => {
 });
 
 // ═══════════════════════════════════════════════
-// Render extracted panels
+// Extracted panel rendering
 // ═══════════════════════════════════════════════
 function renderExtracted(tab) {
   const container = document.getElementById(`tab-${tab}`);
-  const key  = tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables';
+  const key   = tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables';
   const items = state.extracted[key];
 
   if (!items.length) {
@@ -160,14 +185,14 @@ function renderExtracted(tab) {
   }
 
   container.innerHTML = items.map(el => {
-    const deleted = state.deletedIds.has(el.id) ? 'deleted' : '';
+    const deleted  = state.deletedIds.has(el.id) ? 'deleted' : '';
     const longText = el.type === 'text' && (el.text || '').length > 120;
     return `<div class="ext-card ${deleted}" data-id="${el.id}">
       <div class="ext-card-top">
         <span class="ext-type-badge">${extBadgeLabel(el)}</span>
         <span class="ext-page-label">Seite ${el.page}</span>
         <button class="btn-insert" onclick="insertEl('${el.id}','${tab}')">+ Einfügen</button>
-        <button class="btn-delete" onclick="deleteExtracted('${el.id}','${tab}')">✕</button>
+        <button class="btn-delete" onclick="deleteExtracted('${el.id}')">✕</button>
       </div>
       <div class="ext-card-body ${longText ? 'has-fade' : ''}">
         ${extPreviewHtml(el)}
@@ -177,10 +202,9 @@ function renderExtracted(tab) {
 }
 
 function extBadgeLabel(el) {
-  if (el.type === 'text') {
-    return el.block_type === 'heading' ? 'H1' : el.block_type === 'subheading' ? 'H2' : 'Text';
-  }
-  return el.type === 'image' ? 'Bild' : 'Tabelle';
+  if (el.type === 'text')  return el.block_type === 'heading' ? 'H1' : el.block_type === 'subheading' ? 'H2' : 'Text';
+  if (el.type === 'image') return 'Bild';
+  return 'Tabelle';
 }
 
 function extPreviewHtml(el) {
@@ -193,93 +217,186 @@ function extPreviewHtml(el) {
 // Extracted actions
 // ═══════════════════════════════════════════════
 function insertEl(id, tab) {
-  const key   = tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables';
-  const el    = state.extracted[key].find(e => e.id === id);
+  const key = tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables';
+  const el  = state.extracted[key].find(e => e.id === id);
   if (!el) return;
 
-  // Grid cascade: 5 columns × 240px spacing (cards are 220px wide), 130px row height
-  const n   = state.composition.length;
-  const col = n % 5;
-  const row = Math.floor(n / 5);
-  const x   = 40 + col * 240;
-  const y   = 40 + row * 130;
+  const pageIdx = state.activePage;
 
-  state.composition.push({ ...el, compId: `c${state.compCounter++}`, x, y });
-  renderComposition();
+  // Default sizes (as fractions of A4)
+  let wPct, hPct;
+  if (el.type === 'text') {
+    wPct = 0.84;
+    hPct = el.block_type === 'heading' ? 0.055
+         : el.block_type === 'subheading' ? 0.045
+         : 0.12;
+  } else if (el.type === 'image') {
+    wPct = 0.50;
+    const aspect = (el.height && el.width) ? el.height / el.width : 0.75;
+    hPct = Math.min(0.40, wPct * aspect * (A4_W / A4_H));
+  } else {
+    wPct = 0.88;
+    hPct = Math.min(0.38, 0.04 + 0.025 * (el.rows || 4));
+  }
 
-  // Scroll the canvas so the new card is visible
-  const canvas = document.getElementById('compCanvas');
-  canvas.scrollTo({ left: Math.max(0, x - 60), top: Math.max(0, y - 60), behavior: 'smooth' });
+  // Next insertion Y for this page
+  if (!state.pageNextY[pageIdx]) state.pageNextY[pageIdx] = 0.04;
+  const yPct = Math.min(0.88, state.pageNextY[pageIdx]);
+  const xPct = 0.07;
+
+  // Advance cursor; reset to top when near bottom
+  const next = yPct + hPct + 0.02;
+  state.pageNextY[pageIdx] = next > 0.90 ? 0.04 : next;
+
+  state.composition.push({
+    ...el, compId: `c${state.compCounter++}`,
+    pageIndex: pageIdx, xPct, yPct, wPct, hPct,
+  });
+
+  renderCanvas();
+
+  // Scroll so the active page is visible
+  const pageEl = document.querySelector(`.comp-page[data-page-idx="${pageIdx}"]`);
+  if (pageEl) pageEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function deleteExtracted(id, tab) {
+function deleteExtracted(id) {
   state.deletedIds.add(id);
   const card = document.querySelector(`.ext-card[data-id="${id}"]`);
   if (card) card.classList.add('deleted');
 }
 
 // ═══════════════════════════════════════════════
-// Canvas composition rendering
+// Scale computation
 // ═══════════════════════════════════════════════
-function renderComposition() {
-  const inner  = document.getElementById('compInner');
-  const empty  = document.getElementById('compEmpty');
+function computeScale() {
+  const canvas = document.getElementById('compCanvas');
+  const avail  = canvas.clientWidth - 56;   // 28px padding each side
+  pageDisplayW = Math.max(180, avail);
+  pageDisplayH = Math.round(pageDisplayW * A4_H / A4_W);
+}
 
-  // Remove all existing comp-cards from the inner canvas
-  inner.innerHTML = '';
+// ═══════════════════════════════════════════════
+// Canvas rendering — rebuilds all pages and cards
+// ═══════════════════════════════════════════════
+function renderCanvas() {
+  const canvas = document.getElementById('compCanvas');
 
-  empty.style.display = state.composition.length === 0 ? 'flex' : 'none';
+  // Remove existing page wraps and the add-page button row
+  canvas.querySelectorAll('.comp-page-wrap, .comp-add-page-row').forEach(el => el.remove());
 
-  state.composition.forEach(el => {
-    const card = buildCard(el);
-    inner.appendChild(card);
-  });
+  for (let p = 0; p < state.pageCount; p++) {
+    const wrap = document.createElement('div');
+    wrap.className = 'comp-page-wrap';
+
+    // Page label
+    const label = document.createElement('div');
+    label.className = 'comp-page-label';
+    label.textContent = `Seite ${p + 1}`;
+
+    // White A4 sheet
+    const page = document.createElement('div');
+    page.className = 'comp-page' + (p === state.activePage ? ' is-active' : '');
+    page.dataset.pageIdx = p;
+    page.style.width  = pageDisplayW + 'px';
+    page.style.height = pageDisplayH + 'px';
+
+    // Click on page background → make it active
+    page.addEventListener('click', e => {
+      if (!e.target.closest('.comp-card')) setActivePage(p);
+    });
+
+    // Cards on this page
+    const pageCards = state.composition.filter(el => el.pageIndex === p);
+    if (pageCards.length === 0) {
+      const guide = document.createElement('div');
+      guide.className = 'comp-page-guide';
+      guide.textContent = 'Wähle diese Seite aus und klicke „Einfügen"';
+      page.appendChild(guide);
+    }
+    pageCards.forEach(el => page.appendChild(buildCard(el)));
+
+    wrap.appendChild(label);
+    wrap.appendChild(page);
+    canvas.appendChild(wrap);
+  }
+
+  // "Add page" button at the very bottom
+  const addRow = document.createElement('div');
+  addRow.className = 'comp-add-page-row';
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn-add-page-large';
+  addBtn.textContent = '+ Seite hinzufügen';
+  addBtn.onclick = addPage;
+  addRow.appendChild(addBtn);
+  canvas.appendChild(addRow);
 
   updateMergeBtn();
 }
 
+// ═══════════════════════════════════════════════
+// Build a single composition card
+// ═══════════════════════════════════════════════
 function buildCard(el) {
   const card = document.createElement('div');
   card.className = 'comp-card';
   card.dataset.compid = el.compId;
   card.dataset.type   = el.type;
   if (el.type === 'text') card.dataset.btype = el.block_type || 'paragraph';
-  card.style.left = el.x + 'px';
-  card.style.top  = el.y + 'px';
 
-  // Badge class
-  let badgeClass = 'b-para';
-  let badgeText  = 'Text';
-  if (el.type === 'text') {
-    if (el.block_type === 'heading')    { badgeClass = 'b-h1';  badgeText = 'H1'; }
-    else if (el.block_type === 'subheading') { badgeClass = 'b-h2'; badgeText = 'H2'; }
-    else { badgeClass = 'b-para'; badgeText = 'Text'; }
-  } else if (el.type === 'image') { badgeClass = 'b-img'; badgeText = 'Bild'; }
-  else if (el.type === 'table')  { badgeClass = 'b-tbl'; badgeText = 'Tabelle'; }
+  // Position and size from percentages
+  card.style.left   = (el.xPct * pageDisplayW) + 'px';
+  card.style.top    = (el.yPct * pageDisplayH) + 'px';
+  card.style.width  = (el.wPct * pageDisplayW) + 'px';
+  card.style.height = (el.hPct * pageDisplayH) + 'px';
 
-  const mergeCheckbox = el.type === 'text'
+  // Badge
+  let bClass = 'b-para', bText = 'Text';
+  if      (el.type === 'image')                       { bClass = 'b-img'; bText = 'Bild'; }
+  else if (el.type === 'table')                       { bClass = 'b-tbl'; bText = 'Tabelle'; }
+  else if (el.block_type === 'heading')               { bClass = 'b-h1';  bText = 'H1'; }
+  else if (el.block_type === 'subheading')            { bClass = 'b-h2';  bText = 'H2'; }
+
+  const mergeCheck = el.type === 'text'
     ? `<input type="checkbox" class="comp-merge-check" data-compid="${el.compId}" onchange="updateMergeBtn()">`
     : '';
 
-  const bodyContent = cardBodyHtml(el);
-  const longContent = el.type === 'text' && (el.text || '').length > 90;
-
   card.innerHTML = `
     <div class="comp-card-header">
-      <span class="comp-badge ${badgeClass}">${badgeText}</span>
-      ${mergeCheckbox}
-      <span style="font-size:.68rem;color:var(--muted);flex:1;text-align:right">S.${el.page}</span>
+      <span class="comp-badge ${bClass}">${bText}</span>
+      ${mergeCheck}
       <button class="btn-comp-remove" onclick="removeFromComp('${el.compId}')" title="Entfernen">✕</button>
     </div>
-    <div class="comp-card-body ${longContent ? 'faded' : ''}">
-      ${bodyContent}
-    </div>`;
+    <div class="comp-card-body">${cardBodyHtml(el)}</div>
+    <div class="comp-resize-handle"></div>`;
 
-  // Drag: attach mousedown to the card header (not the buttons inside)
+  // Drag — mousedown on header (not on buttons/inputs)
   card.querySelector('.comp-card-header').addEventListener('mousedown', e => {
-    if (e.target.closest('button') || e.target.closest('input')) return;
+    if (e.target.closest('button,input')) return;
     e.preventDefault();
-    startCardDrag(e, el.compId);
+    dragState = {
+      compId:      el.compId,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startCardX:  el.xPct * pageDisplayW,
+      startCardY:  el.yPct * pageDisplayH,
+    };
+    card.classList.add('is-dragging');
+  });
+
+  // Resize — mousedown on corner handle
+  card.querySelector('.comp-resize-handle').addEventListener('mousedown', e => {
+    e.preventDefault(); e.stopPropagation();
+    resizeState = {
+      compId:      el.compId,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startW:      el.wPct * pageDisplayW,
+      startH:      el.hPct * pageDisplayH,
+      cardX:       el.xPct * pageDisplayW,
+      cardY:       el.yPct * pageDisplayH,
+    };
+    card.classList.add('is-resizing');
   });
 
   return card;
@@ -292,48 +409,87 @@ function cardBodyHtml(el) {
 }
 
 // ═══════════════════════════════════════════════
-// Canvas card dragging
+// Mouse drag & resize
 // ═══════════════════════════════════════════════
-function startCardDrag(e, compId) {
-  const el = state.composition.find(c => c.compId === compId);
-  if (!el) return;
+function onMouseMove(e) {
+  if (dragState) {
+    const dx = e.clientX - dragState.startMouseX;
+    const dy = e.clientY - dragState.startMouseY;
+    const el = state.composition.find(c => c.compId === dragState.compId);
+    if (!el) return;
 
-  dragState = {
-    compId,
-    startMouseX: e.clientX,
-    startMouseY: e.clientY,
-    startCardX:  el.x,
-    startCardY:  el.y,
-  };
+    const maxX = pageDisplayW  - el.wPct * pageDisplayW;
+    const maxY = pageDisplayH - el.hPct * pageDisplayH;
+    const newX = Math.max(0, Math.min(maxX, dragState.startCardX + dx));
+    const newY = Math.max(0, Math.min(maxY, dragState.startCardY + dy));
 
-  const cardEl = document.querySelector(`.comp-card[data-compid="${compId}"]`);
-  if (cardEl) cardEl.classList.add('is-dragging');
-}
+    el.xPct = newX / pageDisplayW;
+    el.yPct = newY / pageDisplayH;
 
-function onGlobalMouseMove(e) {
-  if (!dragState) return;
+    const cardEl = document.querySelector(`.comp-card[data-compid="${dragState.compId}"]`);
+    if (cardEl) { cardEl.style.left = newX + 'px'; cardEl.style.top = newY + 'px'; }
 
-  const dx = e.clientX - dragState.startMouseX;
-  const dy = e.clientY - dragState.startMouseY;
+  } else if (resizeState) {
+    const dx = e.clientX - resizeState.startMouseX;
+    const dy = e.clientY - resizeState.startMouseY;
+    const el = state.composition.find(c => c.compId === resizeState.compId);
+    if (!el) return;
 
-  const el = state.composition.find(c => c.compId === dragState.compId);
-  if (!el) return;
+    const maxW = pageDisplayW  - resizeState.cardX;
+    const maxH = pageDisplayH - resizeState.cardY;
+    const newW = Math.max(80, Math.min(maxW, resizeState.startW + dx));
+    const newH = Math.max(44, Math.min(maxH, resizeState.startH + dy));
 
-  el.x = Math.max(0, dragState.startCardX + dx);
-  el.y = Math.max(0, dragState.startCardY + dy);
+    el.wPct = newW / pageDisplayW;
+    el.hPct = newH / pageDisplayH;
 
-  const cardEl = document.querySelector(`.comp-card[data-compid="${dragState.compId}"]`);
-  if (cardEl) {
-    cardEl.style.left = el.x + 'px';
-    cardEl.style.top  = el.y + 'px';
+    const cardEl = document.querySelector(`.comp-card[data-compid="${resizeState.compId}"]`);
+    if (cardEl) { cardEl.style.width = newW + 'px'; cardEl.style.height = newH + 'px'; }
   }
 }
 
-function onGlobalMouseUp() {
-  if (!dragState) return;
-  const cardEl = document.querySelector(`.comp-card[data-compid="${dragState.compId}"]`);
-  if (cardEl) cardEl.classList.remove('is-dragging');
-  dragState = null;
+function onMouseUp() {
+  if (dragState) {
+    document.querySelector(`.comp-card[data-compid="${dragState.compId}"]`)?.classList.remove('is-dragging');
+    dragState = null;
+  }
+  if (resizeState) {
+    document.querySelector(`.comp-card[data-compid="${resizeState.compId}"]`)?.classList.remove('is-resizing');
+    resizeState = null;
+  }
+}
+
+// ═══════════════════════════════════════════════
+// Page management
+// ═══════════════════════════════════════════════
+function setActivePage(idx) {
+  if (idx < 0 || idx >= state.pageCount) return;
+  state.activePage = idx;
+
+  document.querySelectorAll('.comp-page').forEach((el, i) => {
+    el.classList.toggle('is-active', i === idx);
+  });
+  document.getElementById('activePageSelect').value = idx;
+}
+
+function addPage() {
+  state.pageCount++;
+  state.pageNextY.push(0.04);
+
+  const sel = document.getElementById('activePageSelect');
+  const opt = document.createElement('option');
+  opt.value       = state.pageCount - 1;
+  opt.textContent = String(state.pageCount);
+  sel.appendChild(opt);
+
+  setActivePage(state.pageCount - 1);
+  renderCanvas();
+
+  // Scroll to the new (last) page
+  setTimeout(() => {
+    const pages = document.querySelectorAll('.comp-page');
+    if (pages.length) pages[pages.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 80);
 }
 
 // ═══════════════════════════════════════════════
@@ -341,11 +497,11 @@ function onGlobalMouseUp() {
 // ═══════════════════════════════════════════════
 function removeFromComp(compId) {
   state.composition = state.composition.filter(e => e.compId !== compId);
-  renderComposition();
+  renderCanvas();
 }
 
 // ═══════════════════════════════════════════════
-// Merge
+// Merge selected text cards
 // ═══════════════════════════════════════════════
 function updateMergeBtn() {
   const checked = document.querySelectorAll('.comp-merge-check:checked');
@@ -358,44 +514,47 @@ function mergeSelected() {
   const selected = state.composition.filter(e => ids.has(e.compId));
   if (selected.length < 2) return;
 
-  // Use position of topmost selected card
-  const topEl = selected.reduce((a, b) => a.y < b.y ? a : b);
+  // Use topmost selected card's position
+  const topEl = selected.reduce((a, b) => a.yPct < b.yPct ? a : b);
 
   const merged = {
     compId:     `c${state.compCounter++}`,
     type:       'text',
     block_type: 'paragraph',
     page:       topEl.page,
-    text:       selected.map(e => e.text).join(' '),
-    x:          topEl.x,
-    y:          topEl.y,
+    text:       selected.map(e => e.text).join('\n\n'),
+    pageIndex:  topEl.pageIndex,
+    xPct:       topEl.xPct, yPct: topEl.yPct,
+    wPct:       topEl.wPct, hPct: Math.min(0.5, topEl.hPct + 0.04 * (selected.length - 1)),
   };
 
   state.composition = state.composition.filter(e => !ids.has(e.compId));
   state.composition.push(merged);
-  renderComposition();
+  renderCanvas();
 }
 
 // ═══════════════════════════════════════════════
-// Download composed PDF
+// Download PDF (real layout export)
 // ═══════════════════════════════════════════════
 async function downloadComposition() {
   if (!state.composition.length) {
     alert('Füge zuerst Elemente zur Komposition hinzu.');
     return;
   }
+
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
   btn.textContent = '⏳ Wird erstellt…';
 
-  // Sort by vertical position (top → bottom), then horizontal (left → right)
-  const sorted = [...state.composition].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+  // Only export pages that have at least one element
+  const maxPage   = state.composition.reduce((m, e) => Math.max(m, e.pageIndex), 0);
+  const pageCount = maxPage + 1;
 
   try {
     const res = await fetch(`/api/sessions/${sessionId}/compose`, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ elements: sorted }),
+      body:    JSON.stringify({ elements: state.composition, pageCount }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

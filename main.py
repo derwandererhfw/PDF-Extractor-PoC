@@ -115,16 +115,17 @@ async def compose_pdf(session_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Session nicht gefunden.")
 
     body = await request.json()
-    elements = body.get("elements", [])
+    elements   = body.get("elements", [])
+    page_count = max(1, int(body.get("pageCount", 1)))
     if not elements:
         raise HTTPException(status_code=400, detail="Keine Elemente übergeben.")
 
-    output_path = session_dir / "composed.pdf"
+    output_path   = session_dir / "composed.pdf"
     original_path = session_dir / "document.pdf"
 
     try:
         extractor = PDFExtractor(str(original_path), str(session_dir))
-        extractor.generate_composed_pdf(elements, str(output_path))
+        extractor.generate_composed_pdf(elements, page_count, str(output_path))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF-Erstellung fehlgeschlagen: {e}")
 
