@@ -7,170 +7,348 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="results-layout">
+<div class="results-layout">
 
-    <!-- ── Linke Seite: Tabs + Inhalte ── -->
-    <div class="results-main">
-
-      <div class="results-header">
-        <div style="min-width:0">
-          <a href="/" class="back-link">← Neue PDF hochladen</a>
-          <h2 id="filename" style="margin-top:.2rem"></h2>
-        </div>
-        <div id="stats" style="display:flex;gap:.4rem;flex-wrap:wrap"></div>
+  <!-- ══════════ LEFT: Extracted elements ══════════ -->
+  <div class="panel-extracted">
+    <div class="panel-header">
+      <div class="file-meta">
+        <a href="/" class="back-link">← Neue PDF</a>
+        <div class="file-name" id="filename"></div>
       </div>
-
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="text">Text</button>
-        <button class="tab-btn" data-tab="images">Bilder</button>
-        <button class="tab-btn" data-tab="tables">Tabellen</button>
-        <div style="flex:1"></div>
-        <a id="mobileDownload" class="mobile-dl-btn" title="Für Handy optimierte PDF herunterladen">
-          📱 Mobile PDF
-        </a>
-      </div>
-
-      <div class="results-body">
-
-        <div id="text" class="tab-panel active">
-          <div class="text-content" id="textContent">
-            <div class="spinner" style="margin:2rem auto"></div>
-          </div>
-        </div>
-
-        <div id="images" class="tab-panel">
-          <div id="imagesContent">
-            <div class="spinner" style="margin:2rem auto"></div>
-          </div>
-        </div>
-
-        <div id="tables" class="tab-panel">
-          <div id="tablesContent">
-            <div class="spinner" style="margin:2rem auto"></div>
-          </div>
-        </div>
-
-      </div>
+      <div id="stats" style="display:flex;gap:.3rem;flex-wrap:wrap"></div>
     </div>
 
-    <!-- ── Rechte Seite: Original PDF ── -->
-    <div class="pdf-sidebar">
-      <div class="pdf-sidebar-header">
-        <span>Original PDF</span>
-        <span id="pdfFilename" style="opacity:.6;font-weight:400"></span>
-      </div>
-      <iframe id="pdfFrame" title="Original PDF"></iframe>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="text">Text</button>
+      <button class="tab-btn" data-tab="images">Bilder</button>
+      <button class="tab-btn" data-tab="tables">Tabellen</button>
     </div>
 
+    <div class="panel-body">
+      <div id="tab-text"   class="tab-panel active"><div class="spinner" style="margin:2rem auto"></div></div>
+      <div id="tab-images" class="tab-panel"><div class="spinner" style="margin:2rem auto"></div></div>
+      <div id="tab-tables" class="tab-panel"><div class="spinner" style="margin:2rem auto"></div></div>
+    </div>
   </div>
 
-  <script>
-    const params = new URLSearchParams(location.search);
-    const sessionId = params.get('session');
-    const filename = params.get('filename') || 'Dokument';
+  <!-- ══════════ CENTER: Composition ══════════ -->
+  <div class="panel-composition">
+    <div class="comp-toolbar">
+      <span class="panel-title">Komposition</span>
+      <button class="btn-merge" id="mergeBtn" hidden onclick="mergeSelected()">
+        Zusammenführen
+      </button>
+      <button class="btn-download" id="downloadBtn" onclick="downloadComposition()">
+        📄 PDF herunterladen
+      </button>
+    </div>
 
-    if (!sessionId) location.href = '/';
+    <div class="panel-body" style="padding:0">
+      <div class="comp-empty" id="compEmpty">
+        Noch keine Elemente.<br>Klicke <strong>Einfügen</strong> bei einem Element links.
+      </div>
+      <div id="compList"></div>
+    </div>
+  </div>
 
-    document.getElementById('filename').textContent = filename;
-    document.getElementById('pdfFilename').textContent = filename;
-    document.getElementById('pdfFrame').src = `/api/sessions/${sessionId}/pdf`;
+  <!-- ══════════ RIGHT: PDF sidebar (collapsible) ══════════ -->
+  <div class="panel-pdf" id="pdfPanel">
+    <div class="pdf-toggle-bar">
+      <button class="pdf-toggle-btn" id="pdfToggle" onclick="togglePdf()" title="PDF ein-/ausklappen">◀</button>
+      <span class="pdf-toggle-label" id="pdfLabel">Original PDF</span>
+    </div>
+    <iframe id="pdfFrame" title="Original PDF"></iframe>
+  </div>
 
-    // Mobile PDF download
-    const dlBtn = document.getElementById('mobileDownload');
-    dlBtn.href = `/api/sessions/${sessionId}/mobile-pdf`;
-    dlBtn.addEventListener('click', () => {
-      dlBtn.textContent = '⏳ Wird erstellt…';
-      dlBtn.style.pointerEvents = 'none';
-      setTimeout(() => {
-        dlBtn.textContent = '📱 Mobile PDF';
-        dlBtn.style.pointerEvents = '';
-      }, 8000);
-    });
+</div>
 
-    const statsEl = document.getElementById('stats');
-    [['pages','Seiten'],['images','Bilder'],['tables','Tabellen']].forEach(([key, label]) => {
-      statsEl.innerHTML += `<span class="badge">${params.get(key) ?? '?'} ${label}</span>`;
-    });
+<script>
+// ═══════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════
+const params    = new URLSearchParams(location.search);
+const sessionId = params.get('session');
+if (!sessionId) location.href = '/';
 
-    // Tab switching
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById(btn.dataset.tab).classList.add('active');
+const state = {
+  extracted: { text: [], images: [], tables: [] },
+  deletedIds: new Set(),
+  composition: [],
+  compCounter: 0,
+  dragSrcIdx: null,
+};
+
+// ═══════════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════════
+document.getElementById('filename').textContent = params.get('filename') || 'Dokument';
+document.getElementById('pdfFrame').src = `/api/sessions/${sessionId}/pdf`;
+
+const statsEl = document.getElementById('stats');
+[['pages','Seiten'],['images','Bilder'],['tables','Tabellen']].forEach(([k,l]) => {
+  statsEl.innerHTML += `<span class="badge">${params.get(k) ?? '?'} ${l}</span>`;
+});
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Load extracted data
+// ═══════════════════════════════════════════════
+fetch(`/api/sessions/${sessionId}/text`).then(r => r.json()).then(data => {
+  let idx = 0;
+  (data.pages || []).forEach(page => {
+    (page.blocks || []).forEach(block => {
+      state.extracted.text.push({
+        id: `text-${idx++}`, type: 'text',
+        block_type: block.type, text: block.text, page: page.page,
       });
     });
+  });
+  renderExtracted('text');
+}).catch(() => {
+  document.getElementById('tab-text').innerHTML = '<div class="empty">Fehler beim Laden.</div>';
+});
 
-    // Load text
-    fetch(`/api/sessions/${sessionId}/text`)
-      .then(r => r.json())
-      .then(data => {
-        const el = document.getElementById('textContent');
-        if (!data.pages?.length) {
-          el.innerHTML = '<div class="empty">Kein extrahierbarer Text gefunden.</div>';
-          return;
-        }
-        el.innerHTML = data.pages.map(page =>
-          `<div class="page-label">Seite ${page.page}</div>` +
-          page.blocks.map(block => {
-            const text = escapeHtml(block.text);
-            if (block.type === 'heading')    return `<div class="block-heading">${text}</div>`;
-            if (block.type === 'subheading') return `<div class="block-subheading">${text}</div>`;
-            return `<div class="block-paragraph">${text}</div>`;
-          }).join('')
-        ).join('');
-      })
-      .catch(() => {
-        document.getElementById('textContent').innerHTML =
-          '<div class="empty">Fehler beim Laden des Texts.</div>';
-      });
+fetch(`/api/sessions/${sessionId}/images`).then(r => r.json()).then(data => {
+  (data.images || []).forEach((img, i) => {
+    state.extracted.images.push({ id: `img-${i}`, type: 'image', ...img });
+  });
+  renderExtracted('images');
+}).catch(() => {
+  document.getElementById('tab-images').innerHTML = '<div class="empty">Fehler beim Laden.</div>';
+});
 
-    // Load images
-    fetch(`/api/sessions/${sessionId}/images`)
-      .then(r => r.json())
-      .then(data => {
-        const el = document.getElementById('imagesContent');
-        if (!data.images?.length) {
-          el.innerHTML = '<div class="empty">Keine eingebetteten Bilder gefunden.</div>';
-          return;
-        }
-        el.innerHTML = `<div class="images-grid">${data.images.map(img => `
-          <div class="image-card">
-            <a href="${img.url}" target="_blank">
-              <img src="${img.url}" alt="Seite ${img.page}" loading="lazy">
-            </a>
-            <div class="image-card-meta">Seite ${img.page}${img.width ? ` · ${img.width}×${img.height}px` : ''}</div>
-          </div>`).join('')}</div>`;
-      })
-      .catch(() => {
-        document.getElementById('imagesContent').innerHTML =
-          '<div class="empty">Fehler beim Laden der Bilder.</div>';
-      });
+fetch(`/api/sessions/${sessionId}/tables`).then(r => r.json()).then(data => {
+  (data.tables || []).forEach((tbl, i) => {
+    state.extracted.tables.push({ id: `table-${i}`, type: 'table', ...tbl });
+  });
+  renderExtracted('tables');
+}).catch(() => {
+  document.getElementById('tab-tables').innerHTML = '<div class="empty">Fehler beim Laden.</div>';
+});
 
-    // Load tables
-    fetch(`/api/sessions/${sessionId}/tables`)
-      .then(r => r.json())
-      .then(data => {
-        const el = document.getElementById('tablesContent');
-        if (!data.tables?.length) {
-          el.innerHTML = '<div class="empty">Keine Tabellen gefunden.</div>';
-          return;
-        }
-        el.innerHTML = data.tables.map(t => `
-          <div class="table-card">
-            <div class="table-card-header">Tabelle ${t.index} · Seite ${t.page} · ${t.rows} Zeilen × ${t.cols} Spalten</div>
-            <div class="table-card-body">${t.html}</div>
-          </div>`).join('');
-      })
-      .catch(() => {
-        document.getElementById('tablesContent').innerHTML =
-          '<div class="empty">Fehler beim Laden der Tabellen.</div>';
-      });
+// ═══════════════════════════════════════════════
+// Render extracted panels
+// ═══════════════════════════════════════════════
+function renderExtracted(tab) {
+  const container = document.getElementById(`tab-${tab}`);
+  const items = state.extracted[tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables'];
 
-    function escapeHtml(str) {
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (!items.length) {
+    container.innerHTML = '<div class="empty">Keine Elemente gefunden.</div>';
+    return;
+  }
+
+  container.innerHTML = items.map(el => {
+    const deleted = state.deletedIds.has(el.id) ? 'deleted' : '';
+    return `<div class="ext-card ${deleted}" data-id="${el.id}">
+      <div class="ext-card-top">
+        <span class="ext-type-badge">${badgeLabel(el)}</span>
+        <span class="ext-page-label">Seite ${el.page}</span>
+        <button class="btn-insert" onclick="insertEl('${el.id}','${tab}')">+ Einfügen</button>
+        <button class="btn-delete" onclick="deleteExtracted('${el.id}','${tab}')">✕</button>
+      </div>
+      <div class="ext-card-body ${el.type === 'text' && el.text.length > 120 ? 'has-fade' : ''}">
+        ${previewHtml(el)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function badgeLabel(el) {
+  if (el.type === 'text') return el.block_type === 'heading' ? 'H1' : el.block_type === 'subheading' ? 'H2' : 'Text';
+  if (el.type === 'image') return 'Bild';
+  return 'Tabelle';
+}
+
+function previewHtml(el) {
+  if (el.type === 'text') return escHtml(el.text);
+  if (el.type === 'image') return `<img src="${el.url}" alt="">`;
+  return `<span style="color:var(--muted)">Tabelle ${el.index} · ${el.rows} Zeilen × ${el.cols} Sp.</span>`;
+}
+
+// ═══════════════════════════════════════════════
+// Extracted actions
+// ═══════════════════════════════════════════════
+function insertEl(id, tab) {
+  const items = state.extracted[tab === 'text' ? 'text' : tab === 'images' ? 'images' : 'tables'];
+  const el = items.find(e => e.id === id);
+  if (!el) return;
+  state.composition.push({ ...el, compId: `c${state.compCounter++}` });
+  renderComposition();
+}
+
+function deleteExtracted(id, tab) {
+  state.deletedIds.add(id);
+  const card = document.querySelector(`.ext-card[data-id="${id}"]`);
+  if (card) card.classList.add('deleted');
+}
+
+// ═══════════════════════════════════════════════
+// Render composition
+// ═══════════════════════════════════════════════
+function renderComposition() {
+  const list  = document.getElementById('compList');
+  const empty = document.getElementById('compEmpty');
+  const merge = document.getElementById('mergeBtn');
+
+  empty.hidden = state.composition.length > 0;
+
+  list.innerHTML = state.composition.map((el, idx) => {
+    const isText = el.type === 'text';
+    return `<div class="comp-item" draggable="true"
+                data-idx="${idx}"
+                ondragstart="onDragStart(event,${idx})"
+                ondragover="onDragOver(event,${idx})"
+                ondrop="onDrop(event,${idx})"
+                ondragleave="onDragLeave(event)"
+                ondragend="onDragEnd()">
+      <span class="drag-handle" title="Ziehen zum Sortieren">⠿</span>
+      <div class="comp-item-inner">
+        <div class="comp-item-head">
+          <span class="comp-type-badge">${badgeLabel(el)}</span>
+          ${isText ? `<input type="checkbox" class="comp-merge-check" data-compid="${el.compId}" onchange="updateMergeBtn()">` : ''}
+        </div>
+        <div class="comp-preview ${isText && el.text.length > 100 ? 'has-fade' : ''}">
+          ${compPreviewHtml(el)}
+        </div>
+      </div>
+      <button class="btn-comp-remove" onclick="removeFromComp('${el.compId}')" title="Entfernen">✕</button>
+    </div>`;
+  }).join('');
+
+  updateMergeBtn();
+}
+
+function compPreviewHtml(el) {
+  if (el.type === 'image') return `<img src="${el.url}" alt="">`;
+  if (el.type === 'table') return `<span style="color:var(--muted)">Tabelle ${el.index} · Seite ${el.page}</span>`;
+  const cls = el.block_type === 'heading' ? 'comp-heading' : el.block_type === 'subheading' ? 'comp-subheading' : '';
+  return `<span class="${cls}">${escHtml(el.text)}</span>`;
+}
+
+function removeFromComp(compId) {
+  state.composition = state.composition.filter(e => e.compId !== compId);
+  renderComposition();
+}
+
+function updateMergeBtn() {
+  const checked = document.querySelectorAll('.comp-merge-check:checked');
+  document.getElementById('mergeBtn').hidden = checked.length < 2;
+}
+
+// ═══════════════════════════════════════════════
+// Merge
+// ═══════════════════════════════════════════════
+function mergeSelected() {
+  const checked = [...document.querySelectorAll('.comp-merge-check:checked')];
+  const ids = new Set(checked.map(cb => cb.dataset.compid));
+  const selected = state.composition.filter(e => ids.has(e.compId));
+  if (selected.length < 2) return;
+
+  const firstIdx = state.composition.findIndex(e => e.compId === selected[0].compId);
+  const merged = {
+    compId: `c${state.compCounter++}`,
+    type: 'text',
+    block_type: 'paragraph',
+    page: selected[0].page,
+    text: selected.map(e => e.text).join(' '),
+  };
+
+  // Replace first selected with merged, remove rest
+  state.composition = state.composition.filter(e => !ids.has(e.compId));
+  state.composition.splice(firstIdx, 0, merged);
+  renderComposition();
+}
+
+// ═══════════════════════════════════════════════
+// Drag & Drop
+// ═══════════════════════════════════════════════
+function onDragStart(e, idx) {
+  state.dragSrcIdx = idx;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+function onDragOver(e, idx) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.comp-item').forEach(el => el.classList.remove('drag-over'));
+  if (idx !== state.dragSrcIdx) e.currentTarget.classList.add('drag-over');
+}
+function onDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+function onDrop(e, toIdx) {
+  e.preventDefault();
+  if (state.dragSrcIdx === null || state.dragSrcIdx === toIdx) return;
+  const item = state.composition.splice(state.dragSrcIdx, 1)[0];
+  state.composition.splice(toIdx, 0, item);
+  renderComposition();
+}
+function onDragEnd() {
+  state.dragSrcIdx = null;
+  document.querySelectorAll('.comp-item').forEach(el => {
+    el.classList.remove('dragging', 'drag-over');
+  });
+}
+
+// ═══════════════════════════════════════════════
+// Download composed PDF
+// ═══════════════════════════════════════════════
+async function downloadComposition() {
+  if (!state.composition.length) {
+    alert('Füge zuerst Elemente zur Komposition hinzu.');
+    return;
+  }
+  const btn = document.getElementById('downloadBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Wird erstellt…';
+
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/compose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ elements: state.composition }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Unbekannter Fehler');
     }
-  </script>
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'zusammengestellt.pdf'; a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`Fehler: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📄 PDF herunterladen';
+  }
+}
+
+// ═══════════════════════════════════════════════
+// PDF sidebar toggle
+// ═══════════════════════════════════════════════
+function togglePdf() {
+  document.getElementById('pdfPanel').classList.toggle('collapsed');
+}
+
+// ═══════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
 </body>
 </html>

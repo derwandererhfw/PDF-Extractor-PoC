@@ -157,6 +157,65 @@ class PDFExtractor:
         html += "</table>"
         return html
 
+    def generate_composed_pdf(self, elements: list, output_path: str) -> str:
+        """
+        Build a new PDF from a list of composition elements.
+        Each element: {type: 'text'|'image'|'table', ...}
+        """
+        import base64
+        import html as html_lib
+
+        css = """
+            body { font-family: Arial, Helvetica, sans-serif; font-size: 11pt;
+                   line-height: 1.55; color: #1a1a1a; margin: 0; padding: 0; }
+            h1   { font-size: 18pt; font-weight: bold; margin: 0 0 8pt; }
+            h2   { font-size: 13pt; font-weight: bold; margin: 0 0 6pt; }
+            p    { margin: 0 0 8pt; }
+            img  { max-width: 100%; height: auto; display: block; margin: 6pt 0; }
+            table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 10pt; }
+            th   { background: #e8eaf6; font-weight: bold;
+                   padding: 5pt 7pt; border: 0.5pt solid #999; }
+            td   { padding: 4pt 7pt; border: 0.5pt solid #999; }
+            tr:nth-child(even) td { background: #f5f5f5; }
+        """
+        parts = [f"<html><head><style>{css}</style></head><body>"]
+
+        for el in elements:
+            t = el.get("type")
+            if t == "text":
+                tag = {"heading": "h1", "subheading": "h2"}.get(el.get("block_type"), "p")
+                text = html_lib.escape(el.get("text", ""))
+                parts.append(f"<{tag}>{text}</{tag}>")
+            elif t == "image":
+                img_path = self.images_dir / el.get("filename", "")
+                if img_path.exists():
+                    ext = img_path.suffix[1:].lower()
+                    mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+                    data = base64.b64encode(img_path.read_bytes()).decode()
+                    parts.append(f'<img src="data:image/{mime};base64,{data}"/>')
+            elif t == "table":
+                parts.append(el.get("html", ""))
+
+        parts.append("</body></html>")
+        full_html = "\n".join(parts)
+
+        story = fitz.Story(html=full_html)
+        writer = fitz.DocumentWriter(str(output_path))
+        pagerect = fitz.paper_rect("a4")
+        margin = 50
+        where = fitz.Rect(
+            pagerect.x0 + margin, pagerect.y0 + margin,
+            pagerect.x1 - margin, pagerect.y1 - margin,
+        )
+        more = True
+        while more:
+            device = writer.begin_page(pagerect)
+            more, _ = story.place(where)
+            story.draw(device)
+            writer.end_page()
+        writer.close()
+        return output_path
+
     def generate_mobile_pdf(self, output_path: str, target_width_pt: float = 360.0) -> str:
         """
         Re-scale every page so it fits exactly target_width_pt wide.

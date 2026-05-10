@@ -2,7 +2,7 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -106,6 +106,34 @@ async def serve_image(session_id: str, filename: str):
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Bild nicht gefunden.")
     return FileResponse(img_path)
+
+
+@app.post("/api/sessions/{session_id}/compose")
+async def compose_pdf(session_id: str, request: Request):
+    session_dir = SESSIONS_DIR / session_id
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail="Session nicht gefunden.")
+
+    body = await request.json()
+    elements = body.get("elements", [])
+    if not elements:
+        raise HTTPException(status_code=400, detail="Keine Elemente übergeben.")
+
+    output_path = session_dir / "composed.pdf"
+    original_path = session_dir / "document.pdf"
+
+    try:
+        extractor = PDFExtractor(str(original_path), str(session_dir))
+        extractor.generate_composed_pdf(elements, str(output_path))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF-Erstellung fehlgeschlagen: {e}")
+
+    return FileResponse(
+        str(output_path),
+        media_type="application/pdf",
+        filename="zusammengestellt.pdf",
+        headers={"Content-Disposition": "attachment; filename=zusammengestellt.pdf"},
+    )
 
 
 def _load_results(session_id: str) -> dict:
