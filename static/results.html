@@ -41,14 +41,14 @@
     </div>
 
     <div class="comp-canvas" id="compCanvas">
-      <div class="comp-canvas-inner" id="compInner">
-        <div class="comp-empty-overlay" id="compEmpty">
-          <div class="comp-empty-box">
-            Noch keine Elemente.<br>
-            Klicke <strong>Einfügen</strong> bei einem Element links.
-          </div>
+      <!-- Empty overlay is a direct child of comp-canvas so inset:0 fills the visible viewport, not the 2400x1600 inner div -->
+      <div class="comp-empty-overlay" id="compEmpty">
+        <div class="comp-empty-box">
+          Noch keine Elemente.<br>
+          Klicke <strong>Einfügen</strong> bei einem Element links.
         </div>
       </div>
+      <div class="comp-canvas-inner" id="compInner"></div>
     </div>
   </div>
 
@@ -197,13 +197,19 @@ function insertEl(id, tab) {
   const el    = state.extracted[key].find(e => e.id === id);
   if (!el) return;
 
-  // Cascade new cards diagonally so they don't stack perfectly
-  const offset = state.composition.length * 24;
-  const x = 40 + (offset % 480);
-  const y = 40 + Math.floor(offset / 480) * 160 + (offset % 480 === 0 ? 0 : 0);
+  // Grid cascade: 5 columns × 240px spacing (cards are 220px wide), 130px row height
+  const n   = state.composition.length;
+  const col = n % 5;
+  const row = Math.floor(n / 5);
+  const x   = 40 + col * 240;
+  const y   = 40 + row * 130;
 
   state.composition.push({ ...el, compId: `c${state.compCounter++}`, x, y });
   renderComposition();
+
+  // Scroll the canvas so the new card is visible
+  const canvas = document.getElementById('compCanvas');
+  canvas.scrollTo({ left: Math.max(0, x - 60), top: Math.max(0, y - 60), behavior: 'smooth' });
 }
 
 function deleteExtracted(id, tab) {
@@ -216,11 +222,11 @@ function deleteExtracted(id, tab) {
 // Canvas composition rendering
 // ═══════════════════════════════════════════════
 function renderComposition() {
-  const inner = document.getElementById('compInner');
-  const empty = document.getElementById('compEmpty');
+  const inner  = document.getElementById('compInner');
+  const empty  = document.getElementById('compEmpty');
 
-  // Remove all existing comp-cards (but keep the empty overlay)
-  inner.querySelectorAll('.comp-card').forEach(c => c.remove());
+  // Remove all existing comp-cards from the inner canvas
+  inner.innerHTML = '';
 
   empty.style.display = state.composition.length === 0 ? 'flex' : 'none';
 
